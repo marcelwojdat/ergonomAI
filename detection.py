@@ -8,8 +8,7 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions, vision
 
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "pose_landmarker_lite.task"
+import config
 
 # Indeksy w 33-elementowej liście MediaPipe Pose.
 # L/P = lewa/prawa strona OSOBY, nie obrazu (na zdjęciu en face są odwrócone).
@@ -36,8 +35,10 @@ class Point(NamedTuple):
     # z (głębia) celowo pomijamy - to szum przy jednej kamerze
 
 
-def create_landmarker(model_path: Path = MODEL_PATH) -> vision.PoseLandmarker:
+def create_landmarker(model_path: Path | None = None) -> vision.PoseLandmarker:
     """Tworzy landmarker. Wywołuj RAZ, przed pętlą - ładowanie modelu jest droższe niż inferencja."""
+    # None + rozwiązanie w środku: domyślny argument `= config.MODEL_PATH` liczyłby się raz, przy definicji
+    model_path = model_path or config.MODEL_PATH
     options = vision.PoseLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(model_path)),
         running_mode=vision.RunningMode.IMAGE,  # każda klatka niezależna
@@ -84,7 +85,7 @@ def detect_keypoints(landmarker: vision.PoseLandmarker, rgb: np.ndarray) -> dict
 
 
 def main() -> None:
-    photos = [BASE_DIR / "surowka" / "prosto.jpg", BASE_DIR / "surowka" / "garb.jpg"]
+    photos = [config.BASE_DIR / "surowka" / "prosto.jpg", config.BASE_DIR / "surowka" / "garb.jpg"]
 
     with create_landmarker() as landmarker:  # model ładowany raz dla wszystkich zdjęć
         for photo in photos:

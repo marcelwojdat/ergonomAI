@@ -7,10 +7,8 @@ import math
 from collections.abc import Sequence
 from typing import Protocol
 
+import config
 from detection import BARK_L, BARK_P, BIODRO_L, BIODRO_P, NOS, UCHO_L, UCHO_P
-
-MIN_VIS = 0.6           # próg wiarygodności pojedynczego punktu
-SIDE_TIE_MARGIN = 0.05  # różnica sum visibility poniżej tego = remis, rozstrzyga z
 
 # (ucho, bark, biodro) dla każdej strony OSOBY
 SIDES: dict[str, tuple[int, int, int]] = {
@@ -41,7 +39,7 @@ def choose_side(landmarks: Sequence[Landmark]) -> str:
     vis_left = landmarks[UCHO_L].visibility + landmarks[BARK_L].visibility
     vis_right = landmarks[UCHO_P].visibility + landmarks[BARK_P].visibility
 
-    if abs(vis_left - vis_right) >= SIDE_TIE_MARGIN:
+    if abs(vis_left - vis_right) >= config.SIDE_TIE_MARGIN:
         return "left" if vis_left > vis_right else "right"
     return "left" if landmarks[BARK_L].z < landmarks[BARK_P].z else "right"
 
@@ -65,8 +63,8 @@ def compute_features(landmarks: Sequence[Landmark], width: int, height: int) -> 
     # Nos na prawo od ucha = patrzy w prawo, wtedy dodatnie dx to "do przodu". Inaczej odwracamy znak.
     facing = 1 if landmarks[NOS].x > ear.x else -1
 
-    neck_ok = ear.visibility >= MIN_VIS and shoulder.visibility >= MIN_VIS
-    torso_ok = shoulder.visibility >= MIN_VIS and hip.visibility >= MIN_VIS
+    neck_ok = ear.visibility >= config.MIN_VIS and shoulder.visibility >= config.MIN_VIS
+    torso_ok = shoulder.visibility >= config.MIN_VIS and hip.visibility >= config.MIN_VIS
 
     return {
         "status": "ok" if neck_ok else "low_visibility",

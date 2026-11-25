@@ -1,7 +1,8 @@
 """Pętla monitora: co N sekund klatka JPEG z ESP32 -> punkty -> kąty -> wiersz CSV + stan w pamięci.
 
 Pętla capture działa w osobnym wątku; główny wątek tylko czeka na Ctrl+C.
-Użycie:  python monitor.py http://192.168.1.50/capture [--interval 5] [--out data]
+Tryb bez WWW (konsola + CSV). Domyślny URL, interwał i folder danych - w config.py.
+Użycie:  python monitor.py [URL_ESP32] [--interval 5] [--out data]
 """
 
 import argparse
@@ -18,14 +19,10 @@ import requests
 import config
 from classifier import ClassifierResult, PostureClassifier, load_baseline, save_baseline
 from csv_logger import CsvLogger
-from detection import BASE_DIR, create_landmarker, detect_landmarks, load_rgb_from_bytes
+from detection import create_landmarker, detect_landmarks, load_rgb_from_bytes
 from features import SIDES, compute_features, to_px
 from state import SharedState
 from window_stats import RollingWindow, WindowStats
-
-REQUEST_TIMEOUT = 3        # s, osobno na połączenie i na odczyt; bez tego zawieszone WiFi = zamrożony skrypt
-OVERLAY_EVERY = 10         # zapis nakładki NA DYSK co N-tą udaną detekcję (licząc od pierwszej)
-FRAME_JPEG_QUALITY = 80    # jakość JPEG klatki z nakładką trzymanej w pamięci (dla WWW)
 
 logger = logging.getLogger("ergonomai")
 
@@ -33,7 +30,7 @@ logger = logging.getLogger("ergonomai")
 def fetch_frame(url: str) -> bytes | None:
     """Bajty JPEG albo None. Żaden błąd sieci nie może zatrzymać pętli."""
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response = requests.get(url, timeout=config.REQUEST_TIMEOUT)
     except requests.RequestException:  # timeout, connection error, urwany transfer...
         return None
     if response.status_code != 200 or not response.content:
@@ -107,7 +104,7 @@ def sample(landmarker, url: str, out_dir: Path, overlay_due: bool) -> tuple[dict
     overlay = draw_overlay(rgb, landmarks, feats)  # w pamięci: KAŻDA klatka z osobą
     if overlay_due:                                 # na dysku: co N-tą, jak dotąd
         cv2.imwrite(str(frame_path.with_name(frame_path.stem + "_overlay.jpg")), overlay)
-    ok, encoded = cv2.imencode(".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
+    ok, encoded = cv2.imencode(".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, config.FRAME_JPEG_QUALITY])
     return row, encoded.tobytes() if ok else data
 
 
@@ -188,7 +185,7 @@ def capture_loop(url: str, interval: float, out_dir: Path,
         while not stop.is_set():
             try:
                 status = process_once(landmarker, classifier, window, csv_log, state, url, out_dir,
-                                      overlay_due=detections % OVERLAY_EVERY == 0)
+                                      overlay_due=detections % config.OVERLAY_EVERY == 0)
                 if status in ("ok", "low_visibility"):
                     detections += 1
             except Exception:  # ostatnia siatka: błąd poza sample() (np. w klasyfikatorze) też nie zabija wątku
@@ -221,16 +218,18 @@ def start_capture(url: str, interval: float, out_dir: Path,
 def stop_capture(thread: threading.Thread, stop: threading.Event) -> None:
     """Grzeczne zatrzymanie: sygnał + czekanie, aż wątek dokończy iterację i zamknie CSV."""
     stop.set()
-    thread.join(timeout=2 * REQUEST_TIMEOUT + 5)  # najgorszy przypadek: trwające żądanie HTTP
+    thread.join(timeout=2 * config.REQUEST_TIMEOUT + 5)  # najgorszy przypadek: trwające żądanie HTTP
     if thread.is_alive():
         logger.warning("Wątek capture nie zakończył się w czasie - wychodzę mimo to.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Monitor postawy: klatka z ESP32 co N s -> CSV.")
-    parser.add_argument("url", help="adres JPEG z kamery, np. http://192.168.1.50/capture")
-    parser.add_argument("--interval", type=float, default=5.0, help="odstęp między klatkami [s]")
-    parser.add_argument("--out", type=Path, default=BASE_DIR / "data", help="folder na CSV i klatki")
+    parser.add_argument("url", nargs="?", default=config.ESP32_URL,
+                        help=f"adres JPEG z ESP32 (domyślnie z config.py: {config.ESP32_URL})")
+    parser.add_argument("--interval", type=float, default=config.CAPTURE_INTERVAL,
+                        help="odstęp między klatkami [s]")
+    parser.add_argument("--out", type=Path, default=config.OUT_DIR, help="folder na CSV i klatki")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s: %(message)s")

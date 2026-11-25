@@ -1,4 +1,8 @@
-"""Parametry aplikacji w jednym miejscu - zmieniasz tutaj, nie w kodzie."""
+"""Parametry aplikacji w jednym miejscu - zmieniasz tutaj, nie w kodzie.
+
+Moduły czytają je jako `config.NAZWA` w chwili użycia (nie `from config import NAZWA`),
+więc zmiana wartości w trakcie działania - np. w teście - jest widoczna wszędzie.
+"""
 
 from pathlib import Path
 
@@ -7,7 +11,15 @@ BASE_DIR = Path(__file__).resolve().parent
 # --- Kamera / capture ---
 ESP32_URL = "http://192.168.0.11/capture"  # adres ESP32 z Serial Monitora po starcie płytki
 CAPTURE_INTERVAL = 5.0                     # s między klatkami
+REQUEST_TIMEOUT = 3.0                      # s, osobno na połączenie i odczyt HTTP; bez tego zawieszone WiFi = zamrożona pętla
 OUT_DIR = BASE_DIR / "data"                # CSV i klatki (w .gitignore - to Twój obraz)
+OVERLAY_EVERY = 10                         # zapis nakładki NA DYSK co N-tą udaną detekcję (licząc od pierwszej)
+FRAME_JPEG_QUALITY = 80                    # jakość JPEG klatki z nakładką trzymanej w pamięci (dla WWW)
+
+# --- Model i punkty ciała ---
+MODEL_PATH = BASE_DIR / "pose_landmarker_lite.task"
+MIN_VIS = 0.6            # próg wiarygodności punktu (visibility) - poniżej: kąt pusty, nie 0
+SIDE_TIE_MARGIN = 0.05   # różnica sum visibility L/P poniżej tego = remis, rozstrzyga głębia z barków
 
 # --- Serwer WWW ---
 HOST = "127.0.0.1"  # tylko ten komputer; "0.0.0.0" wystawiłby obraz z kamery całej sieci
