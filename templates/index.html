@@ -60,14 +60,16 @@
     button:disabled { opacity: .5; cursor: default; }
 
     .metrics {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      display: grid; grid-template-columns: repeat(3, 1fr);  /* 6 kafelków = 2 równe rzędy */
       gap: 8px; margin: 0;
     }
+    @media (max-width: 480px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
     .metrics > div {
       background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
     }
     dt { font-size: .8rem; color: var(--muted); }
     dd { margin: 0; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    dd.na { font-size: 1rem; line-height: 2.025rem; color: var(--muted); }  /* "za mało danych" */
     .details {
       margin: 12px 0 0; text-align: center; color: var(--muted);
       font-size: .85rem; font-variant-numeric: tabular-nums;
@@ -100,6 +102,8 @@
     <div><dt>Kąt szyi</dt><dd id="neck">—</dd></div>
     <div><dt>Baseline</dt><dd id="baseline">—</dd></div>
     <div><dt>Delta</dt><dd id="delta">—</dd></div>
+    <div><dt>Garbienie ({{ window_label }})</dt><dd id="win-slouch">—</dd></div>
+    <div><dt>Ważne próbki ({{ window_label }})</dt><dd id="win-valid">—</dd></div>
     <div><dt>Wiek klatki</dt><dd id="age">—</dd></div>
   </dl>
   <p class="details" id="details"></p>
@@ -199,6 +203,10 @@
     $("neck").textContent = fmtAngle(s.neck_angle);
     $("baseline").textContent = fmtAngle(s.baseline);
     $("delta").textContent = fmtDelta(s.delta);
+    const winSlouch = $("win-slouch");
+    winSlouch.textContent = s.win_enough_data ? `${Math.round(s.win_slouch_pct)}%` : "za mało danych";
+    winSlouch.classList.toggle("na", !s.win_enough_data);
+    $("win-valid").textContent = s.win_valid_pct == null ? "—" : `${Math.round(s.win_valid_pct)}%`;
     $("age").textContent = s.frame_age_s == null ? "—" : `${Math.round(s.frame_age_s)} s`;
     $("updated").textContent = s.timestamp ? `pomiar ${s.timestamp.slice(11, 19)}` : "—";
     $("details").textContent = [

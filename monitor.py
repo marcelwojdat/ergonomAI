@@ -21,6 +21,7 @@ from csv_logger import CsvLogger
 from detection import BASE_DIR, create_landmarker, detect_landmarks, load_rgb_from_bytes
 from features import SIDES, compute_features, to_px
 from state import SharedState
+from window_stats import RollingWindow, WindowStats
 
 REQUEST_TIMEOUT = 3        # s, osobno na połączenie i na odczyt; bez tego zawieszone WiFi = zamrożony skrypt
 OVERLAY_EVERY = 10         # zapis nakładki NA DYSK co N-tą udaną detekcję (licząc od pierwszej)
@@ -116,17 +117,21 @@ RESULT_FIELDS = ("verdict", "smoothed_angle", "delta", "baseline",
                  "calibrating", "calib_collected", "calib_needed")
 
 
-def publish(state: SharedState, row: dict, frame: bytes | None, result: ClassifierResult) -> None:
-    """Wiersz + werdykt -> stan. Pola pomiaru zawsze nadpisujemy (brak = None); klatkę tylko, gdy jest nowa."""
+def publish(state: SharedState, row: dict, frame: bytes | None,
+            result: ClassifierResult, stats: WindowStats) -> None:
+    """Wiersz + werdykt + okno -> stan. Pola pomiaru zawsze nadpisujemy (brak = None); klatkę tylko, gdy jest nowa."""
     changes = {key: row.get(key) for key in STATE_FIELDS}
     changes.update({key: getattr(result, key) for key in RESULT_FIELDS})
+    changes.update(win_samples=stats.samples, win_valid_pct=stats.valid_pct,
+                   win_slouch_pct=stats.slouch_pct, win_enough_data=stats.enough_data)
     if frame is not None:
         changes.update(frame_jpeg=frame, frame_timestamp=row["timestamp"],
                        frame_monotonic=time.monotonic())
     state.update(**changes)
 
 
-def process_once(landmarker, classifier: PostureClassifier, csv_log: CsvLogger, state: SharedState,
+def process_once(landmarker, classifier: PostureClassifier, window: RollingWindow,
+                 csv_log: CsvLogger, state: SharedState,
                  url: str, out_dir: Path, overlay_due: bool) -> str:
     """Jedna iteracja: (start kalibracji) -> próbka -> werdykt -> CSV -> stan. Zwraca status próbki."""
     # Przejęcie żądania PRZED próbką: liczą się pomiary zrobione po kliknięciu "Kalibruj"
@@ -141,6 +146,8 @@ def process_once(landmarker, classifier: PostureClassifier, csv_log: CsvLogger, 
         row, frame = {"timestamp": _now_iso()[1], "status": "error"}, None
 
     result = classifier.update(row["status"], row.get("neck_angle"))
+    row.update(smoothed_angle=result.smoothed_angle, delta=result.delta, verdict=result.verdict)
+    stats = window.add(time.monotonic(), result.verdict)
     if result.new_baseline is not None:
         logger.info("Kalibracja zakończona: baseline = %.1f°", result.new_baseline)
         try:
@@ -152,12 +159,13 @@ def process_once(landmarker, classifier: PostureClassifier, csv_log: CsvLogger, 
         csv_log.write(row)
     except OSError:  # np. pełny dysk - stan w pamięci i tak aktualizujemy
         logger.exception("Nie udało się zapisać wiersza CSV")
-    publish(state, row, frame, result)
+    publish(state, row, frame, result, stats)
 
     delta = "" if result.delta is None else f" (delta {result.delta:+.1f})"
+    win = "za mało danych" if stats.slouch_pct is None else f"garbienie {stats.slouch_pct:.0f}%"
     print(f"{row['timestamp'][11:19]}  {row['status']:<14} {row.get('side') or '':<6}"
           f"neck={_fmt_angle(row.get('neck_angle')):>5}  torso={_fmt_angle(row.get('torso_angle')):>5}"
-          f"  -> {result.verdict}{delta}")
+          f"  -> {result.verdict}{delta}  | okno: {win}, ważne {stats.valid_pct:.0f}%")
     return row["status"]
 
 
@@ -167,6 +175,8 @@ def capture_loop(url: str, interval: float, out_dir: Path,
     detections = 0
     # Klasyfikator żyje TYLKO w tym wątku (jeden właściciel) - dlatego nie potrzebuje locka
     classifier = PostureClassifier.from_config(load_baseline(config.BASELINE_FILE))
+    # Rzeczywisty interwał wątku (nie z configu) - oczekiwana liczba próbek musi mu odpowiadać
+    window = RollingWindow(config.WINDOW_S, interval, config.WINDOW_MIN_VALID)
     state.update(baseline=classifier.baseline, calib_needed=config.CALIBRATION_SAMPLES)
 
     with create_landmarker() as landmarker, CsvLogger(out_dir / "posture_log.csv") as csv_log:
@@ -177,7 +187,7 @@ def capture_loop(url: str, interval: float, out_dir: Path,
 
         while not stop.is_set():
             try:
-                status = process_once(landmarker, classifier, csv_log, state, url, out_dir,
+                status = process_once(landmarker, classifier, window, csv_log, state, url, out_dir,
                                       overlay_due=detections % OVERLAY_EVERY == 0)
                 if status in ("ok", "low_visibility"):
                     detections += 1

@@ -35,6 +35,12 @@ class Snapshot:
     calib_collected: int = 0
     calib_needed: int = 0
 
+    # Okno kroczące (pisze wątek capture)
+    win_samples: int = 0
+    win_valid_pct: float | None = None    # % ważnych względem oczekiwanej liczby próbek
+    win_slouch_pct: float | None = None   # % garbienia wśród ważnych; None = za mało danych
+    win_enough_data: bool = False
+
     # Żądanie kalibracji: ustawia serwer WWW, przejmuje (kasuje) wątek capture
     calibration_requested: bool = False
 

@@ -36,6 +36,11 @@ def snapshot_to_json(snap: Snapshot) -> dict:
     return data
 
 
+def _window_label(seconds: float) -> str:
+    """300 -> "5 min", 90 -> "90 s" (bez "1.5 min" czy "0.333333 min")."""
+    return f"{seconds / 60:g} min" if seconds % 60 == 0 else f"{seconds:g} s"
+
+
 def create_app(state: SharedState) -> Flask:
     app = Flask(__name__)
 
@@ -50,6 +55,7 @@ def create_app(state: SharedState) -> Flask:
             "index.html",
             refresh_ms=int(config.UI_REFRESH_S * 1000),
             calib_seconds=round(config.CALIBRATION_SAMPLES * config.CAPTURE_INTERVAL),
+            window_label=_window_label(config.WINDOW_S),
         )
 
     @app.get("/api/state")

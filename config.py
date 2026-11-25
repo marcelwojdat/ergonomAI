@@ -21,5 +21,9 @@ SLOUCH_ENTER_DELTA = 12.0     # ° ponad baseline: OK -> GARBIENIE
 SLOUCH_EXIT_DELTA = 8.0       # ° ponad baseline: GARBIENIE -> OK (martwa strefa 8-12° tłumi szum)
 BASELINE_FILE = BASE_DIR / "baseline.json"  # w .gitignore - Twoja osobista kalibracja
 
+# --- Statystyki okna ---
+WINDOW_S = 300.0         # s; okno kroczące statystyk (5 min)
+WINDOW_MIN_VALID = 0.5   # poniżej tego odsetka ważnych próbek (względem oczekiwanej liczby) -> "za mało danych"
+
 # --- Świeżość danych ---
 FRAME_STALE_AFTER = 15.0  # s; starsza klatka = "Brak obrazu"

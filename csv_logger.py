@@ -1,13 +1,39 @@
 """Zapis wyników do CSV: jeden wiersz na każdą próbę, także nieudaną."""
 
 import csv
+import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
+# Nowe kolumny dopisujemy NA KOŃCU - skrypty czytające po indeksie dalej działają
 COLUMNS = [
     "timestamp", "status", "side", "neck_angle", "torso_angle",
     "vis_ear", "vis_shoulder", "vis_hip", "image_file",
+    "smoothed_angle", "delta", "verdict",
 ]
+
+logger = logging.getLogger("ergonomai")
+
+
+def _read_header(path: Path) -> list[str] | None:
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            return next(csv.reader(f), None)
+    except (UnicodeDecodeError, csv.Error):  # np. plik zapisany przez Excel w innym kodowaniu
+        return None
+
+
+def _rotate_if_schema_changed(path: Path) -> None:
+    """Inny nagłówek = inny schemat. Stary plik dostaje nazwę z datą i zostaje NIETKNIĘTY
+    (rotacja zamiast migracji: nigdy nie przepisujemy istniejących danych)."""
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    if _read_header(path) == COLUMNS:
+        return
+    archived = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}{path.suffix}")
+    os.replace(path, archived)
+    logger.warning("Zmieniony schemat CSV - stary plik przeniesiony do %s", archived.name)
 
 
 def _fmt(value) -> str:
@@ -22,6 +48,7 @@ class CsvLogger:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_if_schema_changed(self.path)
 
         # Pusty plik też traktujemy jak nowy (np. skrypt padł, zanim zapisał nagłówek)
         needs_header = not self.path.exists() or self.path.stat().st_size == 0
