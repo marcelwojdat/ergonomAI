@@ -14,5 +14,12 @@ HOST = "127.0.0.1"  # tylko ten komputer; "0.0.0.0" wystawiłby obraz z kamery c
 PORT = 8000
 UI_REFRESH_S = 3.0  # s; jak często strona odpytuje /api/state
 
+# --- Klasyfikacja postawy ---
+CALIBRATION_SAMPLES = 6       # ważnych pomiarów do baseline (6 x 5 s = 30 s)
+SMOOTHING_WINDOW = 3          # mediana z tylu ostatnich ważnych pomiarów kąta szyi
+SLOUCH_ENTER_DELTA = 12.0     # ° ponad baseline: OK -> GARBIENIE
+SLOUCH_EXIT_DELTA = 8.0       # ° ponad baseline: GARBIENIE -> OK (martwa strefa 8-12° tłumi szum)
+BASELINE_FILE = BASE_DIR / "baseline.json"  # w .gitignore - Twoja osobista kalibracja
+
 # --- Świeżość danych ---
 FRAME_STALE_AFTER = 15.0  # s; starsza klatka = "Brak obrazu"

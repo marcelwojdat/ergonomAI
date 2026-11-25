@@ -7,12 +7,14 @@
   <style>
     :root {
       --bg: #f4f5f7; --card: #ffffff; --text: #1c1f23; --muted: #6b7280; --border: #e3e5e9;
-      --neutral: #8a919c; --warn-bg: #fdf0c8; --warn-text: #7a4b00;
+      --neutral: #8a919c; --ok: #15803d; --bad: #c62828;
+      --warn-bg: #fdf0c8; --warn-text: #7a4b00;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #0f1115; --card: #181b21; --text: #e6e8eb; --muted: #9aa1ab; --border: #2a2f37;
-        --neutral: #7d8590; --warn-bg: #3a2d0c; --warn-text: #f5cd6b;
+        --neutral: #7d8590; --ok: #4ade80; --bad: #f87171;
+        --warn-bg: #3a2d0c; --warn-text: #f5cd6b;
       }
     }
     * { box-sizing: border-box; }
@@ -41,11 +43,21 @@
       background: rgba(0, 0, 0, .65); color: #fff; font-size: .9rem;
     }
 
-    .status {
-      margin: 16px 0 12px; text-align: center;
-      font-size: 2rem; font-weight: 700; color: var(--neutral);
+    .verdict {
+      margin: 16px 0 4px; text-align: center; line-height: 1.2;
+      font-size: 2.5rem; font-weight: 800; color: var(--neutral);
     }
-    .status[data-status="ok"] { color: var(--text); }
+    .verdict[data-verdict="ok"] { color: var(--ok); }
+    .verdict[data-verdict="slouching"] { color: var(--bad); }
+    .hint { margin: 0 0 12px; min-height: 1.5em; text-align: center; color: var(--muted); font-size: .95rem; }
+
+    .actions { display: flex; justify-content: center; margin-bottom: 16px; }
+    button {
+      font: inherit; padding: 10px 18px; border-radius: 10px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--card); color: var(--text);
+    }
+    button:hover:not(:disabled) { border-color: var(--muted); }
+    button:disabled { opacity: .5; cursor: default; }
 
     .metrics {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -56,8 +68,12 @@
     }
     dt { font-size: .8rem; color: var(--muted); }
     dd { margin: 0; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .details {
+      margin: 12px 0 0; text-align: center; color: var(--muted);
+      font-size: .85rem; font-variant-numeric: tabular-nums;
+    }
 
-    body.offline .frame, body.offline .status, body.offline .metrics { opacity: .4; }
+    body.offline .frame, body.offline .verdict, body.offline .metrics, body.offline .details { opacity: .4; }
   </style>
 </head>
 <body>
@@ -74,36 +90,54 @@
     <figcaption class="frame-label" id="frame-label">Czekam na pierwszą klatkę…</figcaption>
   </figure>
 
-  <!-- Etap 4: tu pojawi się werdykt postawy -->
-  <section class="status" id="status" data-status="starting">Uruchamianie…</section>
+  <section class="verdict" id="verdict" data-verdict="starting" aria-live="polite">Uruchamianie…</section>
+  <p class="hint" id="hint"></p>
+  <div class="actions">
+    <button type="button" id="calibrate">Kalibruj (siedź prosto {{ calib_seconds }} s)</button>
+  </div>
 
   <dl class="metrics">
     <div><dt>Kąt szyi</dt><dd id="neck">—</dd></div>
-    <div><dt>Kąt tułowia</dt><dd id="torso">—</dd></div>
-    <div><dt>Strona ciała</dt><dd id="side">—</dd></div>
+    <div><dt>Baseline</dt><dd id="baseline">—</dd></div>
+    <div><dt>Delta</dt><dd id="delta">—</dd></div>
     <div><dt>Wiek klatki</dt><dd id="age">—</dd></div>
   </dl>
+  <p class="details" id="details"></p>
 </main>
 
 <script>
   const REFRESH_MS = {{ refresh_ms | tojson }};
 
-  const STATUS_LABELS = {
-    ok: "Pomiar OK",
-    low_visibility: "Niepewny pomiar",
+  // Werdykt liczy serwer; frontend tylko mapuje kody na teksty i kolory
+  const VERDICT_LABELS = {
+    ok: "OK",
+    slouching: "Garbisz się!",
+    no_baseline: "Brak kalibracji",
+    calibrating: "Kalibracja…",
     no_person: "Brak osoby",
     no_frame: "Brak obrazu",
+    low_visibility: "Niepewny pomiar",
     error: "Błąd przetwarzania",
     starting: "Uruchamianie…",
+  };
+  const STATUS_LABELS = {
+    ok: "OK", low_visibility: "niepewny", no_person: "brak osoby",
+    no_frame: "brak obrazu", error: "błąd", starting: "start",
   };
   const SIDE_LABELS = { left: "lewa", right: "prawa" };
 
   const $ = (id) => document.getElementById(id);
   const fmtAngle = (v) => (v == null ? "—" : `${v.toFixed(1)}°`);
+  const fmtDelta = (v) => {
+    if (v == null) return "—";
+    const r = Math.round(v * 10) / 10;  // najpierw zaokrąglenie: bez "-0.0"
+    return `${r > 0 ? "+" : ""}${r.toFixed(1)}°`;
+  };
 
   let shownFrameTs = null;    // klatka widoczna na stronie
   let pendingFrameTs = null;  // klatka w trakcie pobierania
   let lastOkAt = null;        // Date.now() ostatniego udanego odczytu stanu
+  let calibrateError = null;  // komunikat, gdy POST /api/calibrate się nie udał
 
   // Pobiera klatkę w tle i podmienia widoczny <img> dopiero po pełnym załadowaniu:
   // bez migania, a przy błędzie zostaje poprzednia klatka.
@@ -122,15 +156,7 @@
     next.src = `/frame.jpg?t=${encodeURIComponent(ts)}`;
   }
 
-  function render(s) {
-    $("status").textContent = STATUS_LABELS[s.status] ?? s.status;
-    $("status").dataset.status = s.status;
-    $("neck").textContent = fmtAngle(s.neck_angle);
-    $("torso").textContent = fmtAngle(s.torso_angle);
-    $("side").textContent = SIDE_LABELS[s.side] ?? "—";
-    $("age").textContent = s.frame_age_s == null ? "—" : `${Math.round(s.frame_age_s)} s`;
-    $("updated").textContent = s.timestamp ? `pomiar ${s.timestamp.slice(11, 19)}` : "—";
-
+  function renderFrame(s) {
     // Próg "stara klatka" liczy serwer - frontend tylko wyświetla flagę
     $("frame-box").classList.toggle("stale", s.frame_stale);
     const label = $("frame-label");
@@ -146,6 +172,46 @@
     if (s.has_frame) loadFrame(s.frame_timestamp);
   }
 
+  function renderCalibration(s) {
+    const busy = s.calibration_requested || s.calibrating;
+    if (busy) calibrateError = null;
+    $("calibrate").disabled = busy;
+
+    let hint = "";
+    if (s.calibration_requested) {
+      hint = "Kalibracja ruszy przy następnym pomiarze — usiądź prosto.";
+    } else if (s.calibrating) {
+      hint = `Kalibracja: ${s.calib_collected}/${s.calib_needed} pomiarów — siedź prosto.`;
+      if (s.status !== "ok") hint += " Czekam na ważny pomiar…";
+    } else if (calibrateError) {
+      hint = calibrateError;
+    } else if (s.baseline == null) {
+      hint = "Usiądź prosto i kliknij „Kalibruj”, żeby ustalić swoją pozycję odniesienia.";
+    }
+    $("hint").textContent = hint;
+  }
+
+  function render(s) {
+    const verdict = $("verdict");
+    verdict.textContent = VERDICT_LABELS[s.verdict] ?? s.verdict;
+    verdict.dataset.verdict = s.verdict;
+
+    $("neck").textContent = fmtAngle(s.neck_angle);
+    $("baseline").textContent = fmtAngle(s.baseline);
+    $("delta").textContent = fmtDelta(s.delta);
+    $("age").textContent = s.frame_age_s == null ? "—" : `${Math.round(s.frame_age_s)} s`;
+    $("updated").textContent = s.timestamp ? `pomiar ${s.timestamp.slice(11, 19)}` : "—";
+    $("details").textContent = [
+      `wygładzony ${fmtAngle(s.smoothed_angle)}`,
+      `tułów ${fmtAngle(s.torso_angle)}`,
+      `strona ${SIDE_LABELS[s.side] ?? "—"}`,
+      `pomiar: ${STATUS_LABELS[s.status] ?? s.status}`,
+    ].join(" · ");
+
+    renderFrame(s);
+    renderCalibration(s);
+  }
+
   function setOffline(reason) {
     const offline = reason != null;
     document.body.classList.toggle("offline", offline);
@@ -156,6 +222,11 @@
     }
   }
 
+  const describeError = (err) =>
+    err.name === "TimeoutError" ? "serwer nie odpowiada (timeout)"
+    : err.message.startsWith("HTTP") ? `błąd serwera (${err.message})`
+    : "brak połączenia z serwerem";  // fetch rzuca TypeError, gdy serwer nie działa
+
   async function poll() {
     try {
       // fetch nie ma domyślnego timeoutu - bez tego zawieszone zapytanie zatrzymałoby odpytywanie
@@ -165,15 +236,32 @@
       lastOkAt = Date.now();
       setOffline(null);
     } catch (err) {
-      const reason =
-        err.name === "TimeoutError" ? "serwer nie odpowiada (timeout)"
-        : err.message.startsWith("HTTP") ? `błąd serwera (${err.message})`
-        : "brak połączenia z serwerem";  // fetch rzuca TypeError, gdy serwer nie działa
-      setOffline(reason);
+      setOffline(describeError(err));
     } finally {
       setTimeout(poll, REFRESH_MS);  // następne zapytanie dopiero po zakończeniu bieżącego
     }
   }
+
+  $("calibrate").addEventListener("click", async () => {
+    $("calibrate").disabled = true;
+    $("hint").textContent = "Wysyłam żądanie kalibracji…";
+    try {
+      const res = await fetch("/api/calibrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },  // wymagane przez serwer (ochrona CSRF)
+        body: "{}",
+        signal: AbortSignal.timeout(REFRESH_MS),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      calibrateError = null;
+      $("hint").textContent = "Kalibracja ruszy przy następnym pomiarze — usiądź prosto.";
+      // Postęp pokaże kolejny odczyt stanu - nie wołamy poll(), żeby nie tworzyć drugiego łańcucha
+    } catch (err) {
+      calibrateError = `Nie udało się rozpocząć kalibracji: ${describeError(err)}.`;
+      $("hint").textContent = calibrateError;
+      $("calibrate").disabled = false;
+    }
+  });
 
   poll();
 </script>

@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import fields
 
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 import config
 from monitor import start_capture, stop_capture
@@ -27,6 +27,12 @@ def snapshot_to_json(snap: Snapshot) -> dict:
     data["has_frame"] = snap.frame_jpeg is not None
     data["frame_age_s"] = None if age is None else round(age, 1)
     data["frame_stale"] = age is None or age > config.FRAME_STALE_AFTER
+
+    # Werdykt efektywny - z tego samego powodu liczony przy odczycie, a nie przez wątek capture
+    if data["has_frame"] and data["frame_stale"]:
+        data["verdict"] = "no_frame"        # klatka za stara (np. zawieszony wątek / ESP32)
+    elif snap.calibration_requested or snap.calibrating:
+        data["verdict"] = "calibrating"     # od kliknięcia, nie dopiero od pierwszej próbki
     return data
 
 
@@ -40,11 +46,25 @@ def create_app(state: SharedState) -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html", refresh_ms=int(config.UI_REFRESH_S * 1000))
+        return render_template(
+            "index.html",
+            refresh_ms=int(config.UI_REFRESH_S * 1000),
+            calib_seconds=round(config.CALIBRATION_SAMPLES * config.CAPTURE_INTERVAL),
+        )
 
     @app.get("/api/state")
     def api_state():
         return jsonify(snapshot_to_json(state.snapshot()))
+
+    @app.post("/api/calibrate")
+    def api_calibrate():
+        # Wymagamy JSON: obca strona otwarta w przeglądarce może wysłać "prosty" POST (formularz,
+        # text/plain) na 127.0.0.1 bez pytania. application/json wymusza preflight CORS,
+        # na który nie odpowiadamy zgodą - przeglądarka zablokuje takie żądanie (ochrona przed CSRF).
+        if not request.is_json:
+            return jsonify(error="Wymagany Content-Type: application/json"), 415
+        state.request_calibration()  # tylko "bloczek z zamówieniem" - klasyfikatora dotyka wątek capture
+        return jsonify(calibration_requested=True), 202  # przyjęte, wykona inny wątek
 
     @app.get("/frame.jpg")
     def frame():

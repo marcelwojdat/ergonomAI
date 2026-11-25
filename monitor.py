@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 import requests
 
+import config
+from classifier import ClassifierResult, PostureClassifier, load_baseline, save_baseline
 from csv_logger import CsvLogger
 from detection import BASE_DIR, create_landmarker, detect_landmarks, load_rgb_from_bytes
 from features import SIDES, compute_features, to_px
@@ -110,43 +112,78 @@ def sample(landmarker, url: str, out_dir: Path, overlay_due: bool) -> tuple[dict
 
 STATE_FIELDS = ("timestamp", "status", "side", "neck_angle", "torso_angle",
                 "vis_ear", "vis_shoulder", "vis_hip")
+RESULT_FIELDS = ("verdict", "smoothed_angle", "delta", "baseline",
+                 "calibrating", "calib_collected", "calib_needed")
 
 
-def publish(state: SharedState, row: dict, frame: bytes | None) -> None:
-    """Wiersz -> stan. Pola pomiaru zawsze nadpisujemy (brak = None); klatkę tylko, gdy jest nowa."""
+def publish(state: SharedState, row: dict, frame: bytes | None, result: ClassifierResult) -> None:
+    """Wiersz + werdykt -> stan. Pola pomiaru zawsze nadpisujemy (brak = None); klatkę tylko, gdy jest nowa."""
     changes = {key: row.get(key) for key in STATE_FIELDS}
+    changes.update({key: getattr(result, key) for key in RESULT_FIELDS})
     if frame is not None:
         changes.update(frame_jpeg=frame, frame_timestamp=row["timestamp"],
                        frame_monotonic=time.monotonic())
     state.update(**changes)
 
 
+def process_once(landmarker, classifier: PostureClassifier, csv_log: CsvLogger, state: SharedState,
+                 url: str, out_dir: Path, overlay_due: bool) -> str:
+    """Jedna iteracja: (start kalibracji) -> próbka -> werdykt -> CSV -> stan. Zwraca status próbki."""
+    # Przejęcie żądania PRZED próbką: liczą się pomiary zrobione po kliknięciu "Kalibruj"
+    if state.consume_calibration_request():
+        classifier.start_calibration()
+        logger.info("Kalibracja: zbieram %d ważnych pomiarów", config.CALIBRATION_SAMPLES)
+
+    try:
+        row, frame = sample(landmarker, url, out_dir, overlay_due)
+    except Exception:  # błąd przetwarzania klatki -> wiersz "error", wątek działa dalej
+        logger.exception("Błąd w iteracji capture")
+        row, frame = {"timestamp": _now_iso()[1], "status": "error"}, None
+
+    result = classifier.update(row["status"], row.get("neck_angle"))
+    if result.new_baseline is not None:
+        logger.info("Kalibracja zakończona: baseline = %.1f°", result.new_baseline)
+        try:
+            save_baseline(config.BASELINE_FILE, result.new_baseline, result.calibration_samples)
+        except OSError:  # baseline działa w pamięci do restartu, nawet gdy zapis się nie uda
+            logger.exception("Nie udało się zapisać %s", config.BASELINE_FILE.name)
+
+    try:
+        csv_log.write(row)
+    except OSError:  # np. pełny dysk - stan w pamięci i tak aktualizujemy
+        logger.exception("Nie udało się zapisać wiersza CSV")
+    publish(state, row, frame, result)
+
+    delta = "" if result.delta is None else f" (delta {result.delta:+.1f})"
+    print(f"{row['timestamp'][11:19]}  {row['status']:<14} {row.get('side') or '':<6}"
+          f"neck={_fmt_angle(row.get('neck_angle')):>5}  torso={_fmt_angle(row.get('torso_angle')):>5}"
+          f"  -> {result.verdict}{delta}")
+    return row["status"]
+
+
 def capture_loop(url: str, interval: float, out_dir: Path,
                  state: SharedState, stop: threading.Event) -> None:
     """Ciało wątku capture. Jedyne miejsce, które łączy się z ESP32. Kończy się po stop.set()."""
     detections = 0
+    # Klasyfikator żyje TYLKO w tym wątku (jeden właściciel) - dlatego nie potrzebuje locka
+    classifier = PostureClassifier.from_config(load_baseline(config.BASELINE_FILE))
+    state.update(baseline=classifier.baseline, calib_needed=config.CALIBRATION_SAMPLES)
+
     with create_landmarker() as landmarker, CsvLogger(out_dir / "posture_log.csv") as csv_log:
         print(f"Start: {url} co {interval} s -> {out_dir}  (Ctrl+C kończy)")
+        baseline_info = "brak" if classifier.baseline is None else f"{classifier.baseline:.1f}°"
+        print(f"Baseline: {baseline_info}")
         next_tick = time.monotonic()  # zegar monotoniczny: nie skacze przy NTP / zmianie czasu
 
         while not stop.is_set():
             try:
-                row, frame = sample(landmarker, url, out_dir,
-                                    overlay_due=detections % OVERLAY_EVERY == 0)
-            except Exception:  # błąd w jednej iteracji nie może zabić wątku
-                logger.exception("Błąd w iteracji capture")
-                row, frame = {"timestamp": _now_iso()[1], "status": "error"}, None
-
-            try:
-                csv_log.write(row)
-            except OSError:  # np. pełny dysk - stan w pamięci i tak aktualizujemy
-                logger.exception("Nie udało się zapisać wiersza CSV")
-            publish(state, row, frame)
-
-            if row["status"] in ("ok", "low_visibility"):
-                detections += 1
-            print(f"{row['timestamp'][11:19]}  {row['status']:<14} {row.get('side') or '':<6}"
-                  f"neck={_fmt_angle(row.get('neck_angle')):>5}  torso={_fmt_angle(row.get('torso_angle')):>5}")
+                status = process_once(landmarker, classifier, csv_log, state, url, out_dir,
+                                      overlay_due=detections % OVERLAY_EVERY == 0)
+                if status in ("ok", "low_visibility"):
+                    detections += 1
+            except Exception:  # ostatnia siatka: błąd poza sample() (np. w klasyfikatorze) też nie zabija wątku
+                logger.exception("Nieoczekiwany błąd iteracji capture")
+                state.update(status="error", verdict="error", smoothed_angle=None, delta=None)
 
             # Harmonogram bezwzględny: takty liczone od startu, więc błąd się nie sumuje
             next_tick += interval
