@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dane z kamery 
+data/
+surowka/
+
+# Osobista kalibracja 
+baseline.json
+
+# Model MediaPipe (5.8 MB) 
+*.task
+
+# Przyszły firmware: dane WiFi
+secrets.h
+
+# Edytor / system
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
