@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ErgonomAI</title>
+  <style>
+    :root {
+      --bg: #f4f5f7; --card: #ffffff; --text: #1c1f23; --muted: #6b7280; --border: #e3e5e9;
+      --neutral: #8a919c; --warn-bg: #fdf0c8; --warn-text: #7a4b00;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115; --card: #181b21; --text: #e6e8eb; --muted: #9aa1ab; --border: #2a2f37;
+        --neutral: #7d8590; --warn-bg: #3a2d0c; --warn-text: #f5cd6b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 680px; margin: 0 auto; padding: 16px; }
+    header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+    h1 { font-size: 1.25rem; margin: 0; }
+    .updated { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+
+    .banner {
+      background: var(--warn-bg); color: var(--warn-text);
+      padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; font-size: .95rem;
+    }
+
+    .frame {
+      position: relative; margin: 0; aspect-ratio: 4 / 3;
+      background: #000; border-radius: 12px; overflow: hidden;
+    }
+    .frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .frame.stale img { filter: grayscale(1) brightness(.55); }
+    .frame-label {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px;
+      background: rgba(0, 0, 0, .65); color: #fff; font-size: .9rem;
+    }
+
+    .status {
+      margin: 16px 0 12px; text-align: center;
+      font-size: 2rem; font-weight: 700; color: var(--neutral);
+    }
+    .status[data-status="ok"] { color: var(--text); }
+
+    .metrics {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px; margin: 0;
+    }
+    .metrics > div {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+    }
+    dt { font-size: .8rem; color: var(--muted); }
+    dd { margin: 0; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+
+    body.offline .frame, body.offline .status, body.offline .metrics { opacity: .4; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ErgonomAI</h1>
+    <span class="updated" id="updated">—</span>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <figure class="frame stale" id="frame-box">
+    <img id="frame" alt="">
+    <figcaption class="frame-label" id="frame-label">Czekam na pierwszą klatkę…</figcaption>
+  </figure>
+
+  <!-- Etap 4: tu pojawi się werdykt postawy -->
+  <section class="status" id="status" data-status="starting">Uruchamianie…</section>
+
+  <dl class="metrics">
+    <div><dt>Kąt szyi</dt><dd id="neck">—</dd></div>
+    <div><dt>Kąt tułowia</dt><dd id="torso">—</dd></div>
+    <div><dt>Strona ciała</dt><dd id="side">—</dd></div>
+    <div><dt>Wiek klatki</dt><dd id="age">—</dd></div>
+  </dl>
+</main>
+
+<script>
+  const REFRESH_MS = {{ refresh_ms | tojson }};
+
+  const STATUS_LABELS = {
+    ok: "Pomiar OK",
+    low_visibility: "Niepewny pomiar",
+    no_person: "Brak osoby",
+    no_frame: "Brak obrazu",
+    error: "Błąd przetwarzania",
+    starting: "Uruchamianie…",
+  };
+  const SIDE_LABELS = { left: "lewa", right: "prawa" };
+
+  const $ = (id) => document.getElementById(id);
+  const fmtAngle = (v) => (v == null ? "—" : `${v.toFixed(1)}°`);
+
+  let shownFrameTs = null;    // klatka widoczna na stronie
+  let pendingFrameTs = null;  // klatka w trakcie pobierania
+  let lastOkAt = null;        // Date.now() ostatniego udanego odczytu stanu
+
+  // Pobiera klatkę w tle i podmienia widoczny <img> dopiero po pełnym załadowaniu:
+  // bez migania, a przy błędzie zostaje poprzednia klatka.
+  function loadFrame(ts) {
+    if (ts === shownFrameTs || ts === pendingFrameTs) return;  // ta sama klatka - nie pobieraj
+    pendingFrameTs = ts;
+    const next = new Image();
+    next.onload = () => {
+      next.id = "frame";
+      next.alt = "Ostatnia klatka z kamery";
+      $("frame").replaceWith(next);  // podmiana elementu = jedno pobranie, bez cache
+      shownFrameTs = ts;
+      pendingFrameTs = null;
+    };
+    next.onerror = () => { pendingFrameTs = null; };  // spróbujemy przy kolejnym odczycie
+    next.src = `/frame.jpg?t=${encodeURIComponent(ts)}`;
+  }
+
+  function render(s) {
+    $("status").textContent = STATUS_LABELS[s.status] ?? s.status;
+    $("status").dataset.status = s.status;
+    $("neck").textContent = fmtAngle(s.neck_angle);
+    $("torso").textContent = fmtAngle(s.torso_angle);
+    $("side").textContent = SIDE_LABELS[s.side] ?? "—";
+    $("age").textContent = s.frame_age_s == null ? "—" : `${Math.round(s.frame_age_s)} s`;
+    $("updated").textContent = s.timestamp ? `pomiar ${s.timestamp.slice(11, 19)}` : "—";
+
+    // Próg "stara klatka" liczy serwer - frontend tylko wyświetla flagę
+    $("frame-box").classList.toggle("stale", s.frame_stale);
+    const label = $("frame-label");
+    if (!s.has_frame) {
+      label.hidden = false;
+      label.textContent = "Czekam na pierwszą klatkę…";
+    } else if (s.frame_stale) {
+      label.hidden = false;
+      label.textContent = `Brak obrazu — ostatnia klatka sprzed ${Math.round(s.frame_age_s)} s`;
+    } else {
+      label.hidden = true;
+    }
+    if (s.has_frame) loadFrame(s.frame_timestamp);
+  }
+
+  function setOffline(reason) {
+    const offline = reason != null;
+    document.body.classList.toggle("offline", offline);
+    $("banner").hidden = !offline;
+    if (offline) {
+      const ago = lastOkAt ? `, dane sprzed ${Math.round((Date.now() - lastOkAt) / 1000)} s` : "";
+      $("banner").textContent = `Brak aktualnych danych: ${reason}${ago}. Ponawiam…`;
+    }
+  }
+
+  async function poll() {
+    try {
+      // fetch nie ma domyślnego timeoutu - bez tego zawieszone zapytanie zatrzymałoby odpytywanie
+      const res = await fetch("/api/state", { signal: AbortSignal.timeout(REFRESH_MS) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      render(await res.json());
+      lastOkAt = Date.now();
+      setOffline(null);
+    } catch (err) {
+      const reason =
+        err.name === "TimeoutError" ? "serwer nie odpowiada (timeout)"
+        : err.message.startsWith("HTTP") ? `błąd serwera (${err.message})`
+        : "brak połączenia z serwerem";  // fetch rzuca TypeError, gdy serwer nie działa
+      setOffline(reason);
+    } finally {
+      setTimeout(poll, REFRESH_MS);  // następne zapytanie dopiero po zakończeniu bieżącego
+    }
+  }
+
+  poll();
+</script>
+</body>
+</html>

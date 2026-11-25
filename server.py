@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import fields
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, render_template
 
 import config
 from monitor import start_capture, stop_capture
@@ -37,6 +37,10 @@ def create_app(state: SharedState) -> Flask:
     def no_store(response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"  # dane na żywo - przeglądarka ma ich nie trzymać
         return response
+
+    @app.get("/")
+    def index():
+        return render_template("index.html", refresh_ms=int(config.UI_REFRESH_S * 1000))
 
     @app.get("/api/state")
     def api_state():
